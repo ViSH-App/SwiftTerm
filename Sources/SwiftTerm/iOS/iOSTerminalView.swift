@@ -654,10 +654,15 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         return (Position(col: min (max (0, col), terminal.cols-1), row: row), toInt (point))
     }
 
+    /// Encodes a left-button event. xterm's Cb numbers buttons 0=left,
+    /// 1=middle, 2=right, so reporting 1 here made every tap a middle click —
+    /// ncurses discards those unless the application asked for BUTTON2, so
+    /// htop, less and friends simply ignored taps. macOS was unaffected: it
+    /// passes NSEvent.buttonNumber, which is 0 for the left button.
     func encodeFlags (release: Bool) -> Int
     {
         let encodedFlags = terminal.encodeButton(
-            button: 1,
+            button: 0,
             release: release,
             shift: false,
             meta: false,
@@ -692,6 +697,23 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     
     @objc func singleTap (_ gestureRecognizer: UITapGestureRecognizer)
     {
+        // Reporting to the client needs no first responder — it writes the pty
+        // directly. Requiring one meant that with the keyboard dismissed (the
+        // normal state while running htop) the first tap only took focus and
+        // the click never reached the application, so nothing was ever
+        // clickable until the user tapped twice.
+        if !isFirstResponder,
+           allowMouseReporting,
+           terminal.mouseMode.sendButtonPress(),
+           gestureRecognizer.view != nil,
+           gestureRecognizer.state == .ended {
+            sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
+            if terminal.mouseMode.sendButtonRelease() {
+                sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: true)
+            }
+            let _ = becomeFirstResponder ()
+            return
+        }
         if isFirstResponder {
             guard gestureRecognizer.view != nil else { return }
                  
@@ -861,26 +883,50 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         imgView.tintColor = .white
     }
     
+    /// Leftover vertical drag not yet worth a wheel notch, in points.
+    var panWheelRemainder: CGFloat = 0
+
+    /// Reports a drag as wheel notches rather than as a held button.
+    ///
+    /// A one-finger drag is how you scroll on a touch screen, and full-screen
+    /// applications subscribe to the wheel for exactly that (htop asks for
+    /// BUTTON4/BUTTON5). Sending press/motion/release instead delivered a
+    /// button-drag: htop ignored it, and vim selected text. There is also
+    /// nothing else to scroll here — the alternate buffer has no scrollback,
+    /// so the enclosing scroll view cannot move.
+    ///
+    /// Emitted one notch per cell of travel so the rate matches the glyph grid
+    /// rather than the pixel count, and capped per gesture update so a flick
+    /// cannot flood the pty faster than the client drains it.
+    func sendWheel (rows: Int, gestureRecognizer: UIGestureRecognizer) {
+        guard rows != 0 else { return }
+        // Dragging down reveals earlier content: that is wheel-up (button 4).
+        let button = rows > 0 ? 4 : 5
+        let hit = calculateTapHit(gesture: gestureRecognizer)
+        guard let grid = hit.grid.toScreenCoordinate(from: terminal.displayBuffer) else { return }
+        let flags = terminal.encodeButton(
+            button: button, release: false, shift: false, meta: false, control: false)
+        for _ in 0 ..< min(abs(rows), 8) {
+            terminal.sendEvent(
+                buttonFlags: flags, x: grid.col, y: grid.row,
+                pixelX: hit.pixels.col, pixelY: hit.pixels.row)
+        }
+    }
+
     @objc func panMouseHandler (_ gestureRecognizer: UIPanGestureRecognizer){
         guard gestureRecognizer.view != nil else { return }
         if allowMouseReporting && terminal.mouseMode != .off {
             switch gestureRecognizer.state {
             case .began:
-                // send the initial tap
-                if terminal.mouseMode.sendButtonPress() {
-                    sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
-                }
+                panWheelRemainder = 0
             case .ended, .cancelled:
-                if terminal.mouseMode.sendButtonRelease() {
-                    sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: true)
-                }
+                panWheelRemainder = 0
             case .changed:
-                if terminal.mouseMode.sendButtonTracking() {
-                    let hit = calculateTapHit(gesture: gestureRecognizer)
-                    if let grid = hit.grid.toScreenCoordinate(from: terminal.displayBuffer) {
-                        terminal.sendMotion(buttonFlags: encodeFlags(release: false), x: grid.col, y: grid.row, pixelX: hit.pixels.col, pixelY: hit.pixels.row)
-                    }
-                }
+                let travel = gestureRecognizer.translation(in: self).y + panWheelRemainder
+                gestureRecognizer.setTranslation(CGPoint.zero, in: self)
+                let rows = Int(travel / cellDimension.height)
+                panWheelRemainder = travel - CGFloat(rows) * cellDimension.height
+                sendWheel(rows: rows, gestureRecognizer: gestureRecognizer)
             default:
                 break
             }
