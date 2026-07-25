@@ -594,7 +594,38 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     
     @objc func longPress (_ gestureRecognizer: UILongPressGestureRecognizer)
     {
-         if gestureRecognizer.state == .began {
+        // While the client tracks the mouse, a long press is a held button —
+        // that is how you drag out a selection in vim with `mouse=a`, or resize
+        // a tmux pane. A drag alone cannot express it: a plain drag is a scroll
+        // on a touch screen, so the press has to be what distinguishes the two.
+        // Text selection and its menu stay available whenever the client is not
+        // asking for mouse events.
+        if allowMouseReporting && terminal.mouseMode != .off {
+            switch gestureRecognizer.state {
+            case .began:
+                if terminal.mouseMode.sendButtonPress() {
+                    sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
+                }
+            case .changed:
+                if terminal.mouseMode.sendButtonTracking() {
+                    let hit = calculateTapHit(gesture: gestureRecognizer)
+                    if let grid = hit.grid.toScreenCoordinate(from: terminal.displayBuffer) {
+                        terminal.sendMotion(
+                            buttonFlags: encodeFlags(release: false),
+                            x: grid.col, y: grid.row,
+                            pixelX: hit.pixels.col, pixelY: hit.pixels.row)
+                    }
+                }
+            case .ended, .cancelled:
+                if terminal.mouseMode.sendButtonRelease() {
+                    sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: true)
+                }
+            default:
+                break
+            }
+            return
+        }
+        if gestureRecognizer.state == .began {
              let _ = self.becomeFirstResponder()
              let tapLocation = gestureRecognizer.location(in: gestureRecognizer.view)
              let tapRegion = makeContextMenuRegionForTap (point: tapLocation)
@@ -913,9 +944,39 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         }
     }
 
+    /// Translates a drag into cursor keys, for DECSET 1007 (alternate scroll).
+    ///
+    /// A full-screen program that never asked for mouse reporting still has to
+    /// be scrollable by touch: `less`, `man` and `git log` all page with the
+    /// cursor keys and there is nothing else to scroll, the alternate buffer
+    /// having no scrollback. Same one-notch-per-cell rate and per-update cap
+    /// as the wheel path.
+    func sendAlternateScroll (rows: Int) {
+        guard rows != 0 else { return }
+        for _ in 0 ..< min(abs(rows), 8) {
+            // Dragging down reveals earlier content, which is cursor-up.
+            if rows > 0 {
+                sendKeyUp()
+            } else {
+                sendKeyDown()
+            }
+        }
+    }
+
+    /// Whether a drag should reach the client at all, and as what. Re-evaluated
+    /// whenever either input changes -- see `updateMousePanGesture`.
+    var panReportsMouse: Bool {
+        allowMouseReporting && terminal.mouseMode != .off
+    }
+
+    var panScrollsAlternate: Bool {
+        terminal.mouseMode == .off && terminal.isDisplayBufferAlternate && terminal.altScroll
+    }
+
     @objc func panMouseHandler (_ gestureRecognizer: UIPanGestureRecognizer){
         guard gestureRecognizer.view != nil else { return }
-        if allowMouseReporting && terminal.mouseMode != .off {
+        let reportsMouse = panReportsMouse
+        if reportsMouse || panScrollsAlternate {
             switch gestureRecognizer.state {
             case .began:
                 panWheelRemainder = 0
@@ -926,7 +987,11 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
                 gestureRecognizer.setTranslation(CGPoint.zero, in: self)
                 let rows = Int(travel / cellDimension.height)
                 panWheelRemainder = travel - CGFloat(rows) * cellDimension.height
-                sendWheel(rows: rows, gestureRecognizer: gestureRecognizer)
+                if reportsMouse {
+                    sendWheel(rows: rows, gestureRecognizer: gestureRecognizer)
+                } else {
+                    sendAlternateScroll(rows: rows)
+                }
             default:
                 break
             }
@@ -1322,6 +1387,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     
     open func bufferActivated(source: Terminal) {
         updateScroller ()
+        updateMousePanGesture()
     }
     
     open func send(source: Terminal, data: ArraySlice<UInt8>) {
@@ -2643,12 +2709,22 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
         return (width, height)
     }
     
-    open func mouseModeChanged(source: Terminal) {
-        if source.mouseMode != .off {
+    /// The mouse pan gesture is what gives a drag a meaning the client can use:
+    /// wheel notches while it tracks the mouse, cursor keys under alternate
+    /// scroll. It must be installed for either reason, and removed when
+    /// neither holds so the scroll view keeps handling scrollback on the normal
+    /// buffer. Both inputs change at runtime, so this runs on mode changes and
+    /// on buffer switches.
+    func updateMousePanGesture () {
+        if panReportsMouse || panScrollsAlternate {
             enableMousePanGesture()
         } else {
             disableMousePanGesture()
         }
+    }
+
+    open func mouseModeChanged(source: Terminal) {
+        updateMousePanGesture()
     }
     
     open func setTerminalTitle(source: Terminal, title: String) {

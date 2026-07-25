@@ -366,6 +366,17 @@ open class Terminal {
     // You can ignore most of the defaults set here, the function
     // reset() will do that again
     var sendFocus: Bool = false
+
+    /// DECSET 1007 — alternate scroll.
+    ///
+    /// While the alternate buffer is active and the client is NOT tracking the
+    /// mouse, wheel events are translated into cursor keys. Without it a
+    /// full-screen program that never asked for mouse reporting (`less`,
+    /// `man`, `git log`) cannot be scrolled at all on a touch screen: the
+    /// alternate buffer has no scrollback, so there is nothing for the view
+    /// itself to scroll either. On by default, as in xterm's common
+    /// configurations.
+    public private(set) var altScroll: Bool = true
     var cursorHidden : Bool = false
     
     /// Controls the origin mode (DECOM), when set, the screen is limited to the top and bottom margins
@@ -3269,6 +3280,8 @@ open class Terminal {
                 res = mouseMode == .anyEvent ? modeSet : modeReset
             case 1004:
                 res = sendFocus ? modeSet : modeReset
+            case 1007:
+                res = altScroll ? modeSet : modeReset
             case 1005:
                 res = mouseProtocol == .utf8 ? modeSet : modeReset
             case 1006:
@@ -4088,6 +4101,8 @@ open class Terminal {
                 mouseMode = .off
             case 1004: // send focusin/focusout events
                 sendFocus = false
+            case 1007: // alternate scroll
+                altScroll = false
             case 1005: // utf8 ext mode mouse
                 mouseProtocol = .x10
                 mouseMode = .off
@@ -4324,6 +4339,8 @@ open class Terminal {
                    // focusin: ^[[I
                    // focusout: ^[[O
                 sendFocus = true
+            case 1007: // alternate scroll
+                altScroll = true
             case 1005:
                 // utf8 ext mode mouse
                 mouseProtocol = .utf8
