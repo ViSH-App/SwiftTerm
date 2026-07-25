@@ -965,12 +965,18 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
 
     /// Whether a drag should reach the client at all, and as what. Re-evaluated
     /// whenever either input changes -- see `updateMousePanGesture`.
+    ///
+    /// Both tolerate a nil terminal: `bufferActivated` fires while the Terminal
+    /// is still initializing, before the view's implicitly-unwrapped `terminal`
+    /// has been assigned.
     var panReportsMouse: Bool {
-        allowMouseReporting && terminal.mouseMode != .off
+        guard let terminal else { return false }
+        return allowMouseReporting && terminal.mouseMode != .off
     }
 
     var panScrollsAlternate: Bool {
-        terminal.mouseMode == .off && terminal.isDisplayBufferAlternate && terminal.altScroll
+        guard let terminal else { return false }
+        return terminal.mouseMode == .off && terminal.isDisplayBufferAlternate && terminal.altScroll
     }
 
     @objc func panMouseHandler (_ gestureRecognizer: UIPanGestureRecognizer){
