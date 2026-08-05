@@ -28,7 +28,11 @@ public final class BufferLine: CustomDebugStringConvertible {
 
     private var fillCharacter: CharData //used to initialise data
 
-    var images: [TerminalImage]?
+    /// Terminal-graphics placements on this line (kitty protocol, sixel).
+    /// Public so a renderer outside this module can draw them — ViSH's
+    /// native terminal surface owns its own drawing and would otherwise
+    /// silently drop every image codex sends.
+    public var images: [TerminalImage]?
 
     public init (cols: Int, fillData: CharData? = nil, isWrapped: Bool = false)
     {

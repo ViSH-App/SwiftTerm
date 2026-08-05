@@ -13,7 +13,13 @@ import Foundation
  * property, and if that is true, then the `start` and `end` represents offsets within
  * the terminal's buffer.  They are guaranteed to be ordered.
  */
-class SelectionService: CustomDebugStringConvertible {
+/// Selection state and the text-structure rules that extend it (word
+/// boundaries, balanced brackets, multi-line ranges).
+///
+/// Public because it is platform-independent and renderers living outside
+/// this module need exactly these rules: re-deriving them is where a
+/// second renderer would most easily diverge from `TerminalView`.
+public class SelectionService: CustomDebugStringConvertible {
     var terminal: Terminal
     
     public init (terminal: Terminal)
